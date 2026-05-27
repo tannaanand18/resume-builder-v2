@@ -14,9 +14,17 @@ def _is_production_env():
 
 is_prod = _is_production_env()
 
+
+def _database_url():
+    database_url = os.getenv("DATABASE_URL")
+    if database_url and database_url.startswith("mysql://"):
+        return database_url.replace("mysql://", "mysql+pymysql://", 1)
+    return database_url
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    SQLALCHEMY_DATABASE_URI = _database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # SSL for Aiven MySQL
