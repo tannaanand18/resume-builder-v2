@@ -28,6 +28,12 @@ def _is_production_env():
     ])
 
 
+def _is_allowed_origin(origin, allowed_origins):
+    if not origin:
+        return False
+    return origin in allowed_origins or origin.endswith(".vercel.app")
+
+
 def create_app(test_config=None):
     app = Flask(__name__)
 
@@ -66,10 +72,12 @@ def create_app(test_config=None):
     if "https://resume-psi-drab-27.vercel.app" not in allowed_origins:
         allowed_origins.append("https://resume-psi-drab-27.vercel.app")
 
+    vercel_origin_pattern = r"https://.*\.vercel\.app"
+
     # CORS Configuration
     CORS(
         app,
-        origins=allowed_origins,
+        origins=[*allowed_origins, vercel_origin_pattern],
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization", "Cookie"],
         expose_headers=["Set-Cookie"],
@@ -93,7 +101,7 @@ def create_app(test_config=None):
         if request.method == "OPTIONS":
             response = make_response() # pragma: no cover
             origin = request.headers.get('Origin') # pragma: no cover
-            if origin in allowed_origins: # pragma: no cover
+            if _is_allowed_origin(origin, allowed_origins): # pragma: no cover
                 response.headers['Access-Control-Allow-Origin'] = origin # pragma: no cover
                 response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS' # pragma: no cover
                 response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Cookie' # pragma: no cover
@@ -105,7 +113,7 @@ def create_app(test_config=None):
     @app.after_request
     def after_request(response):
         origin = request.headers.get('Origin')
-        if origin in allowed_origins:
+        if _is_allowed_origin(origin, allowed_origins):
             response.headers['Access-Control-Allow-Origin'] = origin # pragma: no cover
             response.headers['Access-Control-Allow-Credentials'] = 'true' # pragma: no cover
             response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Cookie' # pragma: no cover
