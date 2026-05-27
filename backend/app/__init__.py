@@ -1,4 +1,4 @@
-from flask import Flask, request, make_response
+from flask import Flask, request, make_response, jsonify
 from .config import Config
 from .extensions import db, jwt, bcrypt, mail
 from flask_cors import CORS
@@ -81,6 +81,11 @@ def create_app(test_config=None):
     db.init_app(app)
     bcrypt.init_app(app)
     mail.init_app(app)
+
+    @app.route("/", methods=["GET"])
+    @app.route("/api/health", methods=["GET"])
+    def health_check():
+        return jsonify({"status": "ok", "service": "ResumeAI API"}), 200
 
     # ✅ Handle OPTIONS preflight requests
     @app.before_request
