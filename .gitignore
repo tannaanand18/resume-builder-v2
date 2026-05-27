@@ -1,0 +1,50 @@
+# ===============================
+# Backend (Flask / Python)
+# ===============================
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+venv/
+env/
+.venv/
+backend/venv/
+
+.env
+backend/.env
+
+*.db
+*.sqlite3
+instance/
+.coverage
+coverage/
+htmlcov/
+test-results/
+test-report/
+
+# ===============================
+# Frontend (React / Vite)
+# ===============================
+
+node_modules/
+frontend/node_modules/
+
+dist/
+frontend/dist/
+frontend/coverage/
+frontend/vite.config.js.timestamp-*.mjs
+Playwright test/test-results/
+Playwright test/test-report/
+
+.vite/
+
+# ===============================
+# IDE / OS
+# ===============================
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
