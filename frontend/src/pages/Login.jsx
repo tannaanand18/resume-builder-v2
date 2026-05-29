@@ -22,7 +22,10 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const data = await loginUser(form);
+      const data = await loginUser({
+        ...form,
+        email: form.email.trim().toLowerCase(),
+      });
       if (data.access_token) {
         localStorage.setItem("access_token", data.access_token);
       }

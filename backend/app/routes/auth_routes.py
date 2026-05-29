@@ -7,6 +7,7 @@ import threading
 import os
 from datetime import datetime, timedelta
 from functools import wraps
+from sqlalchemy import func
 from flask_jwt_extended import (
     create_access_token, 
     jwt_required, 
@@ -69,7 +70,7 @@ def register():
         data = request.get_json(silent=True) or {}
 
         name = data.get("name")
-        email = data.get("email")
+        email = (data.get("email") or "").strip().lower()
         password = data.get("password")
 
         if not name or not email or not password:
@@ -77,7 +78,7 @@ def register():
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             return response
 
-        if db.session.query(User.id).filter_by(email=email).first():
+        if db.session.query(User.id).filter(func.lower(func.trim(User.email)) == email).first():
             response = make_response(jsonify({"error": "Email already exists"}), 400)
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             return response
@@ -116,8 +117,8 @@ def register():
 @auth.route("/login", methods=["POST"])
 def login():
     try:
-        data = request.get_json()
-        email = data.get("email")
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
         password = data.get("password")
 
         print(f"🔍 Login attempt for: {email}")
@@ -128,7 +129,7 @@ def login():
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             return response
 
-        user = db.session.query(User).filter_by(email=email).first()
+        user = db.session.query(User).filter(func.lower(func.trim(User.email)) == email).first()
 
         if not user:
             print(f"❌ User not found: {email}")

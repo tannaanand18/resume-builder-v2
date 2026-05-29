@@ -33,7 +33,10 @@ function Register() {
     setLoading(true);
     try {
       // send name/email/password to backend API
-      await registerUser(form);
+      await registerUser({
+        ...form,
+        email: form.email.trim().toLowerCase(),
+      });
       // show success toast
       toast.success("Registration successful!");
       // redirect to login page after successful registration

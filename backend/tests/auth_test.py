@@ -59,6 +59,17 @@ def test_auth_bad_requests(client):
     assert client.post("/api/auth/login", json={"email": "fake@test.com", "password": "pass"}).status_code == 401
     assert client.post("/api/auth/login", json={"email": email, "password": "WRONG"}).status_code == 401
 
+
+def test_auth_login_normalizes_email(client):
+    email = setup_user(client)
+
+    log_res = client.post(
+        "/api/auth/login",
+        json={"email": f"  {email.upper()}  ", "password": "pass"},
+    )
+
+    assert log_res.status_code == 200
+
 # =========================================================
 # 3. CHAOS MONKEY: GHOST USER (/me 404)
 # =========================================================
