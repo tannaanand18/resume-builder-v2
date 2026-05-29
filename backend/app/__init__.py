@@ -90,6 +90,13 @@ def create_app(test_config=None):
     bcrypt.init_app(app)
     mail.init_app(app)
 
+    with app.app_context():
+        try:
+            db.create_all()
+            print("Database tables checked/created")
+        except Exception as e:
+            print(f"Database table check skipped: {str(e)}")
+
     @app.route("/", methods=["GET"])
     @app.route("/api/health", methods=["GET"])
     def health_check():
