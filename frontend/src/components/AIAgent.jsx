@@ -6,7 +6,7 @@ import api, { API_URL } from "../services/api";
 const WELCOME_MESSAGE = {
   role: "agent",
   content:
-    "Hi, I am ResumeAI Assistant. Ask me about your resume, add sections, create a new resume, check ATS score, or paste LinkedIn profile text.",
+    "Hi, I am ResumeAI Assistant. Ask me about your resume, add sections, create a new resume, check ATS score, or share a public LinkedIn URL or pasted profile text.",
 };
 
 const getPathname = () => (typeof window !== "undefined" ? window.location.pathname : "/");

@@ -1,4 +1,5 @@
 import json
+import html as html_lib
 import os
 import re
 from datetime import datetime
@@ -30,14 +31,14 @@ Your FULL capabilities:
 3. Add/update/delete any resume section (skills, projects, experience, education, certifications)
 4. Generate AI-powered content (summaries, descriptions)
 5. Check ATS scores against job descriptions
-6. Fetch LinkedIn profiles and create full resumes automatically
+6. Parse LinkedIn profile text and create full resumes automatically
 7. Suggest improvements to existing resumes
 8. Switch resume templates
 
 CRITICAL RULES:
 - When user says "add project: Title using Tech" → add it IMMEDIATELY, no questions
 - When user says "add skill: Name (Level)" → add it IMMEDIATELY, no questions
-- When user gives a LinkedIn URL → fetch and create resume AUTOMATICALLY
+- When user gives a LinkedIn URL → try the public profile page and create the resume automatically
 - Only ask for missing info if truly nothing is provided at all
 - Never use placeholder values like "Company", "Degree", "Institution"
 - Always confirm what was done after completing an action
@@ -50,7 +51,7 @@ COMMANDS YOU UNDERSTAND:
 - "Check ATS for [job description]" → runs ATS check
 - "Update my summary" → generates new summary
 - "Switch to modern template" → changes template
-- "Create resume from linkedin.com/in/username" → fetches LinkedIn and creates resume
+- "Create resume from linkedin.com/in/username" → parses the public profile and creates a resume
 
 Always be helpful, professional, and concise.
 Format responses with bullet points when listing items.
@@ -101,6 +102,15 @@ def get_resume_data(resume_id, user_id):
 # LINKEDIN SCRAPER
 # ─────────────────────────────────────────────────────
 
+def _normalize_linkedin_url(linkedin_url):
+    linkedin_url = (linkedin_url or "").strip().rstrip("/")
+    if not linkedin_url:
+        return ""
+    if not linkedin_url.startswith("http"):
+        linkedin_url = "https://www." + linkedin_url.lstrip("/")
+    linkedin_url = re.sub(r"^https?://(www\.)?", "https://www.", linkedin_url)
+    return linkedin_url
+
 def _extract_linkedin_username(text):
     """Extract LinkedIn username/URL from text."""
     patterns = [
@@ -115,40 +125,46 @@ def _extract_linkedin_username(text):
 
 
 def fetch_linkedin_profile(linkedin_url):
-    """Fetch LinkedIn profile using RapidAPI Fresh LinkedIn Profile Data."""
-    api_key = os.getenv("RAPIDAPI_KEY")
-    if not api_key:
-        raise ValueError("RAPIDAPI_KEY not set in environment")
+    """Fetch a public LinkedIn page and return extractable text."""
+    linkedin_url = _normalize_linkedin_url(linkedin_url)
+    if not linkedin_url:
+        raise ValueError("LinkedIn URL is required")
 
-    # Clean URL — ensure it has the full linkedin.com/in/username format
-    if not linkedin_url.startswith("http"):
-        linkedin_url = "https://www." + linkedin_url
-
-    # Build URN format needed by Fresh LinkedIn Profile Data
-    url = "https://fresh-linkedin-profile-data.p.rapidapi.com/get-linkedin-profile"
     headers = {
-        "x-rapidapi-host": "fresh-linkedin-profile-data.p.rapidapi.com",
-        "x-rapidapi-key": api_key,
-        "Content-Type": "application/json",
-    }
-    params = {
-        "linkedin_url": linkedin_url,
-        "include_skills": "true",
-        "include_certifications": "true",
-        "include_publications": "false",
-        "include_honors": "false",
-        "include_volunteers": "false",
-        "include_projects": "true",
-        "include_patents": "false",
-        "include_courses": "false",
-        "include_organizations": "false",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=20)
-    if response.status_code != 200:
-        raise ValueError(f"LinkedIn API returned {response.status_code}: {response.text[:200]}")
+    response = requests.get(linkedin_url, headers=headers, timeout=20)
+    final_url = (response.url or linkedin_url).lower()
+    blocked_paths = ("/authwall", "/checkpoint/", "/uas/login", "/login")
+    if response.status_code != 200 or any(part in final_url for part in blocked_paths):
+        raise ValueError(
+            "LinkedIn public profile is not accessible from this environment. "
+            "Please paste the copied LinkedIn profile text instead."
+        )
 
-    return response.json()
+    visible_text = _extract_visible_text_from_html(response.text)
+    if len(visible_text) < 200:
+        raise ValueError(
+            "LinkedIn public profile did not expose enough text. Please paste the copied profile text instead."
+        )
+
+    return {"linkedin_url": linkedin_url, "source_text": visible_text}
+
+
+def _extract_visible_text_from_html(page_html):
+    page_html = re.sub(r"(?is)<(script|style|noscript|svg|iframe).*?>.*?</\1>", " ", page_html)
+    page_html = re.sub(r"(?i)<br\s*/?>", "\n", page_html)
+    page_html = re.sub(r"(?i)</(p|div|li|section|article|header|footer|h[1-6]|tr|td|th)>", "\n", page_html)
+    text = re.sub(r"(?s)<[^>]+>", " ", page_html)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
 
 
 def _parse_linkedin_to_resume_data(profile):
@@ -245,6 +261,8 @@ def _parse_linkedin_to_resume_data(profile):
 def _parse_linkedin_text_with_ai(text):
     """Parse pasted LinkedIn profile text using AI."""
     prompt = f"""Extract resume data from this LinkedIn profile text and return ONLY JSON.
+
+Treat the source as a public LinkedIn profile or copied profile text. Do not invent missing facts.
 
 LinkedIn profile text:
 {text[:6000]}
@@ -514,11 +532,17 @@ def handle_agent_message(user_id, message, resume_id=None, conversation_history=
 
 
 def _handle_linkedin_url(user_id, linkedin_url, actions_taken):
-    """Fetch LinkedIn profile via API and create resume."""
+    """Fetch a public LinkedIn profile page and create a resume."""
     try:
-        actions_taken.append(f"Fetching LinkedIn profile: {linkedin_url}")
+        actions_taken.append(f"Reading LinkedIn profile: {linkedin_url}")
         profile = fetch_linkedin_profile(linkedin_url)
-        resume_data = _parse_linkedin_to_resume_data(profile)
+        resume_data = _parse_linkedin_text_with_ai(
+            f"LinkedIn URL: {profile.get('linkedin_url') or linkedin_url}\n\n{profile.get('source_text', '')}"
+        )
+        resume_data["linkedin"] = resume_data.get("linkedin") or profile.get("linkedin_url") or linkedin_url
+
+        if not resume_data.get("title"):
+            resume_data["title"] = f"{resume_data.get('full_name', 'LinkedIn')} Resume"
 
         if not resume_data.get("full_name") and not resume_data.get("experiences"):
             raise ValueError("Could not extract enough data from this LinkedIn profile.")
