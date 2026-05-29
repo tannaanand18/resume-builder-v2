@@ -10,6 +10,36 @@ const SLOW_ENDPOINTS = [
   '/share/email'
 ];
 
+const WARMUP_ENDPOINT = `${API_URL}/`;
+const WARMUP_TIMEOUT = 8000;
+const WARMUP_RETRIES = 24;
+const WARMUP_DELAY_MS = 5000;
+
+const pingServer = async () => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WARMUP_TIMEOUT);
+
+  try {
+    const res = await fetch(WARMUP_ENDPOINT, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const ensureBackendAwake = async () => {
+  if (await pingServer()) return;
+
+  for (let i = 0; i < WARMUP_RETRIES; i += 1) {
+    await wait(WARMUP_DELAY_MS);
+    if (await pingServer()) return;
+  }
+};
+
 const fetchWithTimeout = (url, options = {}, timeout = DEFAULT_TIMEOUT) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -32,6 +62,10 @@ const getAuthHeaders = () => {
 
 const api = {
   get: async (endpoint) => {
+    if (SLOW_ENDPOINTS.some((slowEndpoint) => endpoint.includes(slowEndpoint))) {
+      await ensureBackendAwake();
+    }
+
     const res = await fetchWithTimeout(
       `${API_URL}/api${endpoint}`,
       {
@@ -49,6 +83,10 @@ const api = {
   },
 
   post: async (endpoint, body) => {
+    if (SLOW_ENDPOINTS.some((slowEndpoint) => endpoint.includes(slowEndpoint))) {
+      await ensureBackendAwake();
+    }
+
     const res = await fetchWithTimeout(
       `${API_URL}/api${endpoint}`,
       {
@@ -67,6 +105,10 @@ const api = {
   },
 
   put: async (endpoint, body) => {
+    if (SLOW_ENDPOINTS.some((slowEndpoint) => endpoint.includes(slowEndpoint))) {
+      await ensureBackendAwake();
+    }
+
     const res = await fetchWithTimeout(
       `${API_URL}/api${endpoint}`,
       {
@@ -85,6 +127,10 @@ const api = {
   },
 
   delete: async (endpoint) => {
+    if (SLOW_ENDPOINTS.some((slowEndpoint) => endpoint.includes(slowEndpoint))) {
+      await ensureBackendAwake();
+    }
+
     const res = await fetchWithTimeout(
       `${API_URL}/api${endpoint}`,
       {
