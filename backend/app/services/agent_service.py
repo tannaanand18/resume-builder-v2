@@ -512,53 +512,95 @@ def _execute_intent(user_id, resume_id, message, intent, actions_taken, resume_c
     if name == "add_skill":
         _require_resume(resume_id)
         skill_data = intent.get("skill") or {}
-        skill = add_skill(resume_id, user_id, skill_data.get("name"), skill_data.get("level") or "Intermediate")
+        skill_name = (skill_data.get("name") or "").strip()
+        skill_level = (skill_data.get("level") or "").strip()
+        if not skill_name or skill_name.lower() in ["skill", "unknown", ""]:
+            return {
+                "message": "Sure! Please tell me:\n\n1. **Skill Name** - What skill? (e.g. Python, React, Photoshop)\n2. **Level** - Beginner / Intermediate / Advanced",
+                "actions_taken": [],
+                "data": {"needs_info": "skill"}
+            }
+        if not skill_level or skill_level.lower() not in ["beginner", "intermediate", "advanced"]:
+            skill_level = "Intermediate"
+        skill = add_skill(resume_id, user_id, skill_name, skill_level)
         actions_taken.append(f"Added skill: {skill['skill_name']}")
-        return {"message": f"Done. I added {skill['skill_name']} to your skills.", "actions_taken": actions_taken, "data": {"skill": skill}}
+        return {"message": f"✅ Done! I added **{skill['skill_name']}** ({skill['level']}) to your skills.", "actions_taken": actions_taken, "data": {"skill": skill}}
 
     if name == "add_project":
         _require_resume(resume_id)
         project_data = intent.get("project") or {}
+        title = (project_data.get("title") or "").strip()
+        if not title or title.lower() in ["project", "unknown", ""]:
+            return {
+                "message": "Sure! Please provide the project details:\n\n1. **Project Title** - What is the project name?\n2. **Tech Stack** - What technologies did you use? (e.g. React, Flask, MySQL)\n3. **Project Link** - GitHub or live URL? (optional)\n4. **Description** - Want me to generate it, or do you have one?",
+                "actions_taken": [],
+                "data": {"needs_info": "project"}
+            }
         project = add_project(
             resume_id,
             user_id,
-            project_data.get("title"),
+            title,
             project_data.get("description", ""),
             project_data.get("tech_stack", ""),
             project_data.get("link", ""),
         )
         actions_taken.append(f"Added project: {project['project_title']}")
-        return {"message": f"Done. I added {project['project_title']} to your projects.", "actions_taken": actions_taken, "data": {"project": project}}
+        return {"message": f"✅ Done! I added **{project['project_title']}** to your projects.", "actions_taken": actions_taken, "data": {"project": project}}
 
     if name == "add_experience":
         _require_resume(resume_id)
         exp_data = intent.get("experience") or {}
+        # Check if we have real data
+        company = (exp_data.get("company") or "").strip()
+        role = (exp_data.get("role") or "").strip()
+        # If missing real info, ask user
+        if not company or company.lower() in ["company", "unknown", "n/a", ""]:
+            return {
+                "message": "Sure! Please provide the details:\n\n1. **Job Title/Role** - What was your position?\n2. **Company Name** - Where did you work?\n3. **Start Date** - When did you start? (e.g. Jan 2022)\n4. **End Date** - When did you end? (or say 'Present' if current)\n5. **Description** - Want me to generate it, or do you have one?",
+                "actions_taken": [],
+                "data": {"needs_info": "experience"}
+            }
         exp = add_experience(
             resume_id,
             user_id,
-            exp_data.get("company"),
-            exp_data.get("role"),
+            company,
+            role,
             exp_data.get("start_date", ""),
             exp_data.get("end_date", "Present"),
             exp_data.get("description", ""),
         )
         actions_taken.append(f"Added experience: {exp['role']} at {exp['company']}")
-        return {"message": f"Done. I added {exp['role']} at {exp['company']} to your experience.", "actions_taken": actions_taken, "data": {"experience": exp}}
+        return {"message": f"✅ Done! I added **{exp['role']}** at **{exp['company']}** to your experience.", "actions_taken": actions_taken, "data": {"experience": exp}}
 
     if name == "add_education":
         _require_resume(resume_id)
         edu_data = intent.get("education") or {}
+        degree = (edu_data.get("degree") or "").strip()
+        institution = (edu_data.get("institution") or "").strip()
+        # If missing real info, ask user
+        if not degree or degree.lower() in ["degree", "unknown", "n/a", ""]:
+            return {
+                "message": "Sure! Please provide the education details:\n\n1. **Degree** - What degree? (e.g. B.Tech, MBA, HSC, SSC)\n2. **College/University/Institute Name** - Where did you study?\n3. **Start Year** - (e.g. 2020)\n4. **End Year** - (e.g. 2024)\n5. **Score/GPA** - (optional, e.g. 8.5 CGPA or 85%)",
+                "actions_taken": [],
+                "data": {"needs_info": "education"}
+            }
+        if not institution or institution.lower() in ["institution", "university", "college", "unknown", ""]:
+            return {
+                "message": f"Got it! You studied **{degree}**. \n\nWhat is the name of your **college/university/institute**?",
+                "actions_taken": [],
+                "data": {"needs_info": "institution", "degree": degree}
+            }
         edu = add_education(
             resume_id,
             user_id,
-            edu_data.get("degree"),
-            edu_data.get("institution"),
+            degree,
+            institution,
             edu_data.get("start_year"),
             edu_data.get("end_year"),
             edu_data.get("score"),
         )
-        actions_taken.append(f"Added education: {edu['degree']}")
-        return {"message": f"Done. I added {edu['degree']} to your education.", "actions_taken": actions_taken, "data": {"education": edu}}
+        actions_taken.append(f"Added education: {edu['degree']} at {edu['institution']}")
+        return {"message": f"✅ Done! I added **{edu['degree']}** from **{edu['institution']}** to your education.", "actions_taken": actions_taken, "data": {"education": edu}}
 
     if name == "add_certification":
         _require_resume(resume_id)
