@@ -65,36 +65,49 @@ def _build_reset_link(token):
 # -------------------------------
 @auth.route("/register", methods=["POST"])
 def register():
-    data = request.get_json()
+    try:
+        data = request.get_json(silent=True) or {}
 
-    name = data.get("name")
-    email = data.get("email")
-    password = data.get("password")
+        name = data.get("name")
+        email = data.get("email")
+        password = data.get("password")
 
-    if not name or not email or not password:
-        response = make_response(jsonify({"error": "All fields are required"}), 400)
+        if not name or not email or not password:
+            response = make_response(jsonify({"error": "All fields are required"}), 400)
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            return response
+
+        if db.session.query(User.id).filter_by(email=email).first():
+            response = make_response(jsonify({"error": "Email already exists"}), 400)
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            return response
+
+        hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+
+        new_user = User(
+            name=name,
+            email=email,
+            password=hashed_password
+        )
+
+        db.session.add(new_user)
+        db.session.commit()
+
+        response = make_response(jsonify({"message": "User registered successfully"}), 201)
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         return response
 
-    if db.session.query(User.id).filter_by(email=email).first():
-        response = make_response(jsonify({"error": "Email already exists"}), 400)
+    except Exception as e:
+        db.session.rollback()
+        print(f"Register error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        response = make_response(jsonify({
+            "error": "Registration failed",
+            "details": str(e)
+        }), 500)
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         return response
-
-    hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
-
-    new_user = User(
-        name=name,
-        email=email,
-        password=hashed_password
-    )
-
-    db.session.add(new_user)
-    db.session.commit()
-
-    response = make_response(jsonify({"message": "User registered successfully"}), 201)
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
 
 
 # -------------------------------
@@ -166,7 +179,11 @@ def login():
         print(f"❌ Login error: {str(e)}")
         import traceback
         traceback.print_exc()
-        response = make_response(jsonify({"error": "Login failed"}), 500)
+        db.session.rollback()
+        response = make_response(jsonify({
+            "error": "Login failed",
+            "details": str(e)
+        }), 500)
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         return response
     

@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from datetime import timedelta
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 load_dotenv()
 
 def _is_production_env():
@@ -18,7 +19,15 @@ is_prod = _is_production_env()
 def _database_url():
     database_url = os.getenv("DATABASE_URL")
     if database_url and database_url.startswith("mysql://"):
-        return database_url.replace("mysql://", "mysql+pymysql://", 1)
+        database_url = database_url.replace("mysql://", "mysql+pymysql://", 1)
+    if database_url and database_url.startswith("mysql+pymysql://"):
+        parts = urlsplit(database_url)
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if key.lower() not in {"ssl-mode", "sslmode"}
+        ]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
     return database_url
 
 

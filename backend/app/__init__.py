@@ -102,6 +102,13 @@ def create_app(test_config=None):
     def health_check():
         return jsonify({"status": "ok", "service": "ResumeAI API"}), 200
 
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        print(f"Unhandled error: {str(error)}")
+        response = jsonify({"error": "Server error", "details": str(error)})
+        response.status_code = getattr(error, "code", 500) or 500
+        return response
+
     # ✅ Handle OPTIONS preflight requests
     @app.before_request
     def handle_preflight():
