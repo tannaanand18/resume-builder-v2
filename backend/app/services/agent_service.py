@@ -20,27 +20,49 @@ from app.services.ai_service import (
 
 
 AGENT_SYSTEM_PROMPT = """You are an intelligent AI Resume Assistant integrated into ResumeAI,
-a professional resume builder platform. You have full access to the
-user's resume data and can perform actions on their behalf.
+a professional resume builder platform. You have FULL ACCESS to the user's 
+resume data, dashboard, and all resume sections.
 
-Your capabilities:
-1. Answer questions about the user's resume
-2. Create complete resumes from descriptions
-3. Add/update/delete resume sections
+IMPORTANT: When user asks "can you see my dashboard" or "what resumes do I have" 
+or any question about their data - you DO have access! Use the resume context 
+provided to answer accurately.
+
+Your FULL capabilities:
+1. See and answer questions about ALL user resumes and dashboard data
+2. Create complete resumes from a single description
+3. Add/update/delete any resume section (skills, projects, experience, education, certifications)
 4. Generate AI-powered content (summaries, descriptions)
 5. Check ATS scores against job descriptions
-6. Parse LinkedIn profiles into resumes
+6. Parse LinkedIn profile text into a complete resume
 7. Suggest improvements to existing resumes
+8. Switch resume templates
+9. Download resume links
 
-When user asks you to DO something (not just answer):
-- Confirm what you're about to do
-- Perform the action via API calls
+WHEN USER ASKS ABOUT THEIR DATA:
+- "can you see my dashboard?" → YES! Tell them what resumes you can see
+- "what skills do I have?" → List skills from resume context
+- "how many resumes do I have?" → Count from context
+- "show my experience" → List experiences from context
+- Always use the resume_context data provided to answer
+
+WHEN USER ASKS YOU TO DO SOMETHING:
+- Confirm what you are about to do
+- Do it immediately
 - Confirm what was done
 - Ask if they need anything else
 
+COMMANDS YOU UNDERSTAND:
+- "Add skill: Python (Advanced)" → adds skill
+- "Add project: Title using React" → adds project  
+- "Create resume for Software Engineer" → creates full resume
+- "Check ATS for [job description]" → runs ATS check
+- "Update my summary" → generates new summary
+- "Switch to modern template" → changes template
+
 Always be helpful, professional, and concise.
-Format responses clearly with bullet points when listing items.
-When creating resume content, make it ATS-friendly and professional."""
+Format responses with bullet points when listing items.
+Make all resume content ATS-friendly and professional.
+Never say you don't have access - you DO have full access to user data."""
 
 
 def _client():
@@ -582,20 +604,68 @@ def _execute_intent(user_id, resume_id, message, intent, actions_taken, resume_c
 
 
 def _answer_question(message, resume_context):
-    if not resume_context:
-        return "I can help with that. Open a resume or ask me to create one, and I will use its full context."
-
     lower = message.lower()
+
+    # Dashboard/access questions
+    if any(word in lower for word in ["dashboard", "can you see", "do you have access", "what do you see"]):
+        if not resume_context:
+            return "Yes! I have full access to your ResumeAI account. I can see your dashboard but you don't have any resumes yet. Would you like me to create one?"
+        resume = resume_context.get("resume", {})
+        skills_count = len(resume_context.get("skills", []))
+        projects_count = len(resume_context.get("projects", []))
+        exp_count = len(resume_context.get("experiences", []))
+        return f"""Yes! I have full access to your dashboard. Here is what I can see:
+
+📄 **Active Resume:** {resume.get("title", "Untitled")}
+👤 **Name:** {resume.get("full_name", "Not set")}
+💼 **Title:** {resume.get("professional_title", "Not set")}
+🔧 **Skills:** {skills_count} added
+📁 **Projects:** {projects_count} added
+💼 **Experience:** {exp_count} entries
+
+What would you like me to do?"""
+
+    if not resume_context:
+        return "I don't see an active resume yet. Would you like me to create one for you? Just tell me your profession and I'll build a complete resume!"
+
     if "skill" in lower:
         skills = resume_context.get("skills", [])
         if not skills:
-            return "You have not added any skills to this resume yet."
+            return "You have not added any skills to this resume yet. Want me to add some? Just say: Add skill: Python (Advanced)"
         items = [f"- {s.get('skill_name')} ({s.get('level') or 'Intermediate'})" for s in skills]
         return "Your skills are:\n" + "\n".join(items)
 
     if "how many" in lower and "project" in lower:
         count = len(resume_context.get("projects", []))
         return f"You have added {count} project{'s' if count != 1 else ''} to this resume."
+
+    if "experience" in lower or "work" in lower:
+        experiences = resume_context.get("experiences", [])
+        if not experiences:
+            return "No work experience added yet. Want me to add some?"
+        items = [f"- {e.get('role')} at {e.get('company')}" for e in experiences]
+        return "Your work experience:\n" + "\n".join(items)
+
+    if "education" in lower:
+        educations = resume_context.get("educations", [])
+        if not educations:
+            return "No education added yet. Want me to add some?"
+        items = [f"- {e.get('degree')} from {e.get('institution')}" for e in educations]
+        return "Your education:\n" + "\n".join(items)
+
+    if "certification" in lower or "certificate" in lower:
+        certs = resume_context.get("certifications", [])
+        if not certs:
+            return "No certifications added yet. Want me to add some?"
+        items = [f"- {c.get('title')} from {c.get('organization', 'N/A')}" for c in certs]
+        return "Your certifications:\n" + "\n".join(items)
+
+    if "summary" in lower:
+        resume = resume_context.get("resume", {})
+        summary = resume.get("summary")
+        if not summary:
+            return "No summary yet. Want me to generate one? Just say: Update my summary"
+        return f"Your current summary:\n\n{summary}"
 
     prompt = f"""Answer the user's question using only this resume context. Be concise.
 
