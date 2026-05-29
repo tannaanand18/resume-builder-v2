@@ -34,6 +34,22 @@ def _is_allowed_origin(origin, allowed_origins):
     return origin in allowed_origins or origin.endswith(".vercel.app")
 
 
+def _engine_options(database_url):
+    if database_url and str(database_url).startswith("sqlite"):
+        return {
+            "pool_pre_ping": True,
+            "pool_recycle": 300,
+        }
+
+    return {
+        "connect_args": {
+            "ssl_disabled": False
+        },
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
+
+
 def create_app(test_config=None):
     app = Flask(__name__)
 
@@ -56,6 +72,8 @@ def create_app(test_config=None):
     
     if test_config:
         app.config.update(test_config)
+
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = _engine_options(app.config.get("SQLALCHEMY_DATABASE_URI"))
 
     # Build allowed origins
     frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")

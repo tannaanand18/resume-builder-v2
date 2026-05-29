@@ -1,87 +1,242 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bot, Loader2, MessageCircle, Send, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import api, { API_URL } from "../services/api";
 
-const initialMessage = {
+const WELCOME_MESSAGE = {
   role: "agent",
   content:
     "Hi, I am ResumeAI Assistant. Ask me about your resume, add sections, create a new resume, check ATS score, or paste LinkedIn profile text.",
 };
 
-const getCurrentResumeId = () => {
-  const match = window.location.pathname.match(/\/resume\/(\d+)\/(?:edit|preview|view)/);
+const getPathname = () => (typeof window !== "undefined" ? window.location.pathname : "/");
+
+const getCurrentResumeId = (pathname = getPathname()) => {
+  const match = pathname.match(/\/resume\/(\d+)\/(?:edit|preview|view)/);
   return match ? Number(match[1]) : null;
 };
 
-const getCurrentPage = () => {
-  const path = window.location.pathname;
-  if (path.includes("/resume/") && path.includes("/edit")) return "resume_builder";
-  if (path.includes("/dashboard")) return "dashboard";
-  if (path.includes("/ats-checker")) return "ats_checker";
-  if (path.includes("/resume/new")) return "template_select";
-  return path.replace("/", "") || "home";
+const getCurrentPage = (pathname = getPathname()) => {
+  if (pathname.includes("/resume/") && pathname.includes("/edit")) return "resume_builder";
+  if (pathname.includes("/dashboard")) return "dashboard";
+  if (pathname.includes("/ats-checker")) return "ats_checker";
+  if (pathname.includes("/resume/new")) return "template_select";
+  if (pathname.includes("/login")) return "login";
+  if (pathname.includes("/register")) return "register";
+  return pathname.replace("/", "") || "home";
+};
+
+const conversationKey = (pathname, resumeId) => `resumeai-agent:${pathname}:${resumeId ?? "global"}`;
+
+const readStoredMessages = (key) => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const sortByRecent = (resumes = []) =>
+  [...resumes].sort((left, right) => {
+    const leftTime = left?.created_at ? new Date(left.created_at).getTime() : 0;
+    const rightTime = right?.created_at ? new Date(right.created_at).getTime() : 0;
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return (right?.id || 0) - (left?.id || 0);
+  });
+
+const fetchResumeContext = async (resumeId) => {
+  if (!resumeId) return null;
+
+  const [resume, experiences, educations, skills, projects, certifications] = await Promise.all([
+    api.get(`/resume/${resumeId}`),
+    api.get(`/experience/${resumeId}`),
+    api.get(`/education/${resumeId}`),
+    api.get(`/skills/${resumeId}`),
+    api.get(`/projects/${resumeId}`),
+    api.get(`/certifications/${resumeId}`),
+  ]);
+
+  return {
+    resume: resume.data,
+    experiences: experiences.data,
+    educations: educations.data,
+    skills: skills.data,
+    projects: projects.data,
+    certifications: certifications.data,
+  };
+};
+
+const fetchLatestResume = async () => {
+  try {
+    const response = await api.get("/resume/all");
+    const resumes = Array.isArray(response.data) ? sortByRecent(response.data) : [];
+    return resumes[0] || null;
+  } catch {
+    return null;
+  }
 };
 
 export default function AIAgent() {
   const { user, loading } = useAuth();
+  const [pathname, setPathname] = useState(getPathname());
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([initialMessage]);
+  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [resumeContext, setResumeContext] = useState(null);
+  const [activeResumeId, setActiveResumeId] = useState(null);
   const [error, setError] = useState("");
   const messagesEndRef = useRef(null);
 
-  const resumeId = useMemo(() => getCurrentResumeId(), [open, window.location.pathname]);
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const interval = window.setInterval(() => {
+      setPathname((current) => {
+        const next = window.location.pathname;
+        return current === next ? current : next;
+      });
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, thinking, open]);
 
   useEffect(() => {
-    if (!open || !user || !resumeId) {
-      setResumeContext(null);
-      return;
-    }
+    if (!open || !user) return;
 
     let cancelled = false;
-    const loadResumeContext = async () => {
-      try {
-        const [resume, experiences, educations, skills, projects, certifications] = await Promise.all([
-          api.get(`/resume/${resumeId}`),
-          api.get(`/experience/${resumeId}`),
-          api.get(`/education/${resumeId}`),
-          api.get(`/skills/${resumeId}`),
-          api.get(`/projects/${resumeId}`),
-          api.get(`/certifications/${resumeId}`),
-        ]);
+    const pathResumeId = getCurrentResumeId(pathname);
+    const storageKey = conversationKey(pathname, pathResumeId || activeResumeId);
+    const storedMessages = readStoredMessages(storageKey);
 
-        if (!cancelled) {
-          setResumeContext({
-            resume: resume.data,
-            experiences: experiences.data,
-            educations: educations.data,
-            skills: skills.data,
-            projects: projects.data,
-            certifications: certifications.data,
-          });
+    if (storedMessages) {
+      setMessages(storedMessages);
+    } else {
+      setMessages([WELCOME_MESSAGE]);
+    }
+
+    const loadContext = async () => {
+      try {
+        let resolvedResumeId = pathResumeId;
+        let resolvedContext = null;
+
+        if (!resolvedResumeId) {
+          const latestResume = await fetchLatestResume();
+          resolvedResumeId = latestResume?.id || null;
         }
+
+        if (resolvedResumeId) {
+          resolvedContext = await fetchResumeContext(resolvedResumeId);
+        }
+
+        if (cancelled) return;
+
+        setActiveResumeId(resolvedResumeId);
+        setResumeContext(resolvedContext);
       } catch {
-        if (!cancelled) setResumeContext(null);
+        if (!cancelled) {
+          setResumeContext(null);
+          setActiveResumeId(pathResumeId || null);
+        }
       }
     };
 
-    loadResumeContext();
+    loadContext();
+
     return () => {
       cancelled = true;
     };
-  }, [open, resumeId, user]);
+  }, [open, pathname, user]);
+
+  useEffect(() => {
+    if (!open || !user) return;
+
+    const pathResumeId = getCurrentResumeId(pathname);
+    const key = conversationKey(pathname, pathResumeId || activeResumeId);
+    try {
+      localStorage.setItem(key, JSON.stringify(messages));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [activeResumeId, messages, open, pathname, user]);
 
   if (loading || !user) return null;
 
+  const renderMessageContent = (message) => {
+    const text = String(message.content || "");
+    const lines = text.split("\n");
+
+    return (
+      <>
+        {lines.map((line, index) => {
+          const editMatch = line.match(/(\/resume\/\d+\/edit)/);
+          const previewMatch = line.match(/(\/resume\/\d+\/(?:preview|view))/);
+          const linkMatch = editMatch || previewMatch;
+
+          if (linkMatch) {
+            return (
+              <span key={`${line}-${index}`}>
+                {line.replace(linkMatch[1], "")}
+                <a href={linkMatch[1]} style={styles.link}>
+                  Open resume
+                </a>
+                {index < lines.length - 1 ? <br /> : null}
+              </span>
+            );
+          }
+
+          return (
+            <span key={`${line}-${index}`}>
+              {line}
+              {index < lines.length - 1 ? <br /> : null}
+            </span>
+          );
+        })}
+
+        {message.actions_taken?.length ? (
+          <div style={styles.actionList}>
+            {message.actions_taken.map((action) => (
+              <span key={action} style={styles.actionChip}>
+                {action}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {message.data?.edit_url ? (
+          <a
+            href={message.data.edit_url}
+            style={{ ...styles.link, display: "inline-block", marginTop: 8 }}
+          >
+            Open editor
+          </a>
+        ) : null}
+
+        {message.data?.download_url ? (
+          <a
+            href={`${API_URL}${message.data.download_url}`}
+            style={{ ...styles.link, display: "inline-block", marginTop: 8 }}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Download PDF
+          </a>
+        ) : null}
+      </>
+    );
+  };
+
   const sendMessage = async (event) => {
     event?.preventDefault();
+
     const text = input.trim();
     if (!text || thinking) return;
 
@@ -92,17 +247,22 @@ export default function AIAgent() {
     setThinking(true);
 
     try {
+      const pathResumeId = getCurrentResumeId(pathname);
       const response = await api.post("/ai/agent", {
         message: text,
-        resume_id: getCurrentResumeId(),
-        conversation_history: nextMessages.slice(-10),
+        resume_id: pathResumeId || activeResumeId,
+        conversation_history: nextMessages.slice(-12),
         context: {
-          current_page: getCurrentPage(),
+          current_page: getCurrentPage(pathname),
           resume_data: resumeContext,
         },
       });
 
       const result = response.data || {};
+      const nextResumeId = result.data?.resume_id || result.data?.resume?.resume?.id || result.data?.resume?.id;
+      if (nextResumeId) setActiveResumeId(nextResumeId);
+      if (result.data?.resume) setResumeContext(result.data.resume);
+
       setMessages((current) => [
         ...current,
         {
@@ -124,44 +284,6 @@ export default function AIAgent() {
     }
   };
 
-  const renderMessageContent = (message) => {
-    const lines = String(message.content || "").split("\n");
-    return (
-      <>
-        {lines.map((line, index) => {
-          const editMatch = line.match(/(\/resume\/\d+\/edit)/);
-          if (editMatch) {
-            return (
-              <span key={`${line}-${index}`}>
-                {line.replace(editMatch[1], "")}
-                <a href={editMatch[1]} style={styles.link}>
-                  Open resume
-                </a>
-                {index < lines.length - 1 ? <br /> : null}
-              </span>
-            );
-          }
-          return (
-            <span key={`${line}-${index}`}>
-              {line}
-              {index < lines.length - 1 ? <br /> : null}
-            </span>
-          );
-        })}
-        {message.data?.download_url ? (
-          <a
-            href={`${API_URL}${message.data.download_url}`}
-            style={{ ...styles.link, display: "inline-block", marginTop: 8 }}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Download PDF
-          </a>
-        ) : null}
-      </>
-    );
-  };
-
   return (
     <div style={styles.shell} aria-live="polite">
       <div style={{ ...styles.window, ...(open ? styles.windowOpen : styles.windowClosed) }}>
@@ -172,10 +294,17 @@ export default function AIAgent() {
             </span>
             <div>
               <div style={styles.title}>ResumeAI Assistant</div>
-              <div style={styles.status}>{resumeId ? `Resume #${resumeId}` : "Ready to help"}</div>
+              <div style={styles.status}>
+                {activeResumeId ? `Resume #${activeResumeId}` : "Ready to help"}
+              </div>
             </div>
           </div>
-          <button type="button" style={styles.iconButton} onClick={() => setOpen(false)} aria-label="Close assistant">
+          <button
+            type="button"
+            style={styles.iconButton}
+            onClick={() => setOpen(false)}
+            aria-label="Close assistant"
+          >
             <X size={18} />
           </button>
         </div>
@@ -199,6 +328,7 @@ export default function AIAgent() {
               </div>
             </div>
           ))}
+
           {thinking ? (
             <div style={{ ...styles.row, justifyContent: "flex-start" }}>
               <div style={{ ...styles.bubble, ...styles.agentBubble, ...styles.typing }}>
@@ -207,6 +337,7 @@ export default function AIAgent() {
               </div>
             </div>
           ) : null}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -220,7 +351,12 @@ export default function AIAgent() {
             style={styles.input}
             disabled={thinking}
           />
-          <button type="submit" style={styles.sendButton} disabled={thinking || !input.trim()} aria-label="Send message">
+          <button
+            type="submit"
+            style={styles.sendButton}
+            disabled={thinking || !input.trim()}
+            aria-label="Send message"
+          >
             {thinking ? <Loader2 size={18} style={styles.spin} /> : <Send size={18} />}
           </button>
         </form>
@@ -409,6 +545,20 @@ const styles = {
     color: "#4f46e5",
     fontWeight: 800,
     textDecoration: "none",
+  },
+  actionList: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 10,
+  },
+  actionChip: {
+    fontSize: 11,
+    borderRadius: 999,
+    padding: "4px 8px",
+    background: "rgba(79, 70, 229, 0.1)",
+    color: "#4338ca",
+    fontWeight: 700,
   },
   spin: {
     animation: "resumeai-spin 0.8s linear infinite",

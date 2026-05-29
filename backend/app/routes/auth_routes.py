@@ -129,7 +129,10 @@ def login():
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             return response
 
-        user = db.session.query(User).filter(func.lower(func.trim(User.email)) == email).first()
+        user = User.query.filter_by(email=email).first()
+
+        if not user:
+            user = db.session.query(User).filter(func.lower(func.trim(User.email)) == email).first()
 
         if not user:
             print(f"❌ User not found: {email}")
