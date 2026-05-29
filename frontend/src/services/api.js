@@ -1,7 +1,14 @@
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const DEFAULT_TIMEOUT = 30000;
-const SLOW_TIMEOUT = 60000;
-const SLOW_ENDPOINTS = ['/auth/forgot-password', '/share/email'];
+const SLOW_TIMEOUT = 120000;
+const SLOW_ENDPOINTS = [
+  '/auth/login',
+  '/auth/register',
+  '/auth/me',
+  '/auth/logout',
+  '/auth/forgot-password',
+  '/share/email'
+];
 
 const fetchWithTimeout = (url, options = {}, timeout = DEFAULT_TIMEOUT) => {
   const controller = new AbortController();
