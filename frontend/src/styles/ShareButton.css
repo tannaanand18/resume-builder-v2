@@ -4,7 +4,7 @@
 
 .share-button-wrapper {
   position: fixed;
-  bottom: 30px;
+  bottom: 96px;
   right: 30px;
   z-index: 9999;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -423,7 +423,7 @@
 /* ──── MOBILE RESPONSIVE ──── */
 @media (max-width: 768px) {
   .share-button-wrapper {
-    bottom: 20px;
+    bottom: 88px;
     right: 20px;
   }
 
@@ -451,7 +451,7 @@
 
 @media (max-width: 480px) {
   .share-button-wrapper {
-    bottom: 15px;
+    bottom: 84px;
     right: 15px;
   }
 
