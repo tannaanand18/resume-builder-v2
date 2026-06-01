@@ -2,6 +2,7 @@ import json
 import html as html_lib
 import os
 import re
+import uuid
 from datetime import datetime
 
 import requests
@@ -42,6 +43,8 @@ CRITICAL RULES:
 - Only ask for missing info if truly nothing is provided at all
 - Never use placeholder values like "Company", "Degree", "Institution"
 - Always confirm what was done after completing an action
+- If preview mode is enabled, return proposed changes only and wait for user confirmation before mutating data
+- Return structured JSON with message, intent, suggestions, operations, and pending changes when relevant
 
 COMMANDS YOU UNDERSTAND:
 - "Add skill: Python (Advanced)" → adds skill immediately
@@ -96,6 +99,225 @@ def get_resume_data(resume_id, user_id):
         "projects": [item.to_dict() for item in Project.query.filter_by(resume_id=resume.id).all()],
         "certifications": [item.to_dict() for item in Certification.query.filter_by(resume_id=resume.id).all()],
     }
+
+
+def _agent_context_payload(user_id, message, resume_id=None, conversation_history=None, context=None):
+    context = context or {}
+    resume_context = get_resume_data(resume_id, user_id) if resume_id else None
+    return {
+        "user_id": int(user_id),
+        "message": message,
+        "resume_id": resume_id,
+        "resume_data": resume_context,
+        "linkedin_data": context.get("linkedin_data") or context.get("linkedin_text") or context.get("linkedin_profile"),
+        "current_page": context.get("current_page", ""),
+        "conversation_history": conversation_history or [],
+        "preview_mode": bool(context.get("preview_mode")),
+        "confirm_action": bool(context.get("confirm_action")),
+    }
+
+
+def _make_change(section, action, summary, before=None, after=None, details=None, operation=None):
+    return {
+        "id": str(uuid.uuid4()),
+        "section": section,
+        "action": action,
+        "summary": summary,
+        "before": before,
+        "after": after,
+        "details": details,
+        "operation": operation,
+    }
+
+
+def _proposal_response(message, proposal, extra_data=None):
+    data = {
+        "needs_confirmation": True,
+        "preview_mode": True,
+        "proposal": proposal,
+        "pending_changes": proposal.get("changes", []),
+    }
+    if extra_data:
+        data.update(extra_data)
+    return {
+        "message": message,
+        "actions_taken": [],
+        "data": data,
+    }
+
+
+def _apply_operations(user_id, resume_id, operations):
+    applied = []
+    latest_resume_id = resume_id
+
+    for operation in operations:
+        op_type = (operation.get("type") or "").strip()
+        payload = operation.get("payload") or {}
+
+        if op_type == "create_resume":
+            created = create_full_resume(user_id, payload)
+            latest_resume_id = created.get("resume", {}).get("id") or latest_resume_id
+            applied.append(f"Created resume '{created.get('resume', {}).get('title', 'AI Generated Resume')}'")
+            continue
+
+        if op_type == "add_skill":
+            skill = add_skill(resume_id, user_id, payload.get("skill_name"), payload.get("level", "Intermediate"))
+            applied.append(f"Added skill: {skill['skill_name']} ({skill['level']})")
+            continue
+
+        if op_type == "add_project":
+            project = add_project(
+                resume_id,
+                user_id,
+                payload.get("title"),
+                payload.get("description", ""),
+                payload.get("tech_stack", ""),
+                payload.get("link", ""),
+            )
+            applied.append(f"Added project: {project['project_title']}")
+            continue
+
+        if op_type == "add_experience":
+            experience = add_experience(
+                resume_id,
+                user_id,
+                payload.get("company"),
+                payload.get("role"),
+                payload.get("start_date", ""),
+                payload.get("end_date", "Present"),
+                payload.get("description", ""),
+            )
+            applied.append(f"Added experience: {experience['role']} at {experience['company']}")
+            continue
+
+        if op_type == "add_education":
+            education = add_education(
+                resume_id,
+                user_id,
+                payload.get("degree"),
+                payload.get("institution"),
+                payload.get("start_year"),
+                payload.get("end_year"),
+                payload.get("score"),
+            )
+            applied.append(f"Added education: {education['degree']} at {education['institution']}")
+            continue
+
+        if op_type == "add_certification":
+            certification = add_certification(
+                resume_id,
+                user_id,
+                payload.get("title"),
+                payload.get("organization", ""),
+                payload.get("issue_year", ""),
+            )
+            applied.append(f"Added certification: {certification['title']}")
+            continue
+
+        if op_type == "update_summary":
+            summary = update_summary(resume_id, user_id)
+            applied.append("Updated resume summary")
+            continue
+
+        if op_type == "switch_template":
+            resume = _verify_resume(resume_id, user_id)
+            if not resume:
+                raise ValueError("Resume not found")
+            template_name = (payload.get("template_name") or "modern").lower()
+            if template_name not in {"simple", "modern", "creative"}:
+                template_name = "modern"
+            resume.template_name = template_name
+            applied.append(f"Switched template to {template_name}")
+            continue
+
+        if op_type == "check_ats":
+            result = check_ats(resume_id, user_id, payload.get("job_description", ""))
+            applied.append("Ran ATS analysis")
+            continue
+
+        raise ValueError(f"Unsupported operation: {op_type}")
+
+    latest_snapshot = get_resume_data(latest_resume_id or resume_id, user_id) if (latest_resume_id or resume_id) else None
+    return {
+        "actions_taken": applied,
+        "resume_id": latest_resume_id or resume_id,
+        "resume": latest_snapshot,
+    }
+
+
+def _proposal_from_quick_command(command_name, payload, resume_id):
+    if command_name == "add_skill":
+        skill_name = payload.get("skill_name") or "Skill"
+        level = payload.get("level") or "Intermediate"
+        operation = {
+            "type": "add_skill",
+            "payload": {"skill_name": skill_name, "level": level},
+        }
+        return {
+            "proposal_id": str(uuid.uuid4()),
+            "title": "Add skill",
+            "resume_id": resume_id,
+            "operations": [operation],
+            "changes": [
+                _make_change(
+                    "Skills",
+                    "add_skill",
+                    f"Add {skill_name} ({level})",
+                    after=f"{skill_name} ({level})",
+                    operation=operation,
+                )
+            ],
+        }
+
+    if command_name == "add_project":
+        title = payload.get("title") or "Project"
+        tech_stack = payload.get("tech_stack") or ""
+        operation = {
+            "type": "add_project",
+            "payload": {
+                "title": title,
+                "description": payload.get("description", ""),
+                "tech_stack": tech_stack,
+                "link": payload.get("link", ""),
+            },
+        }
+        after_text = title if not tech_stack else f"{title} using {tech_stack}"
+        return {
+            "proposal_id": str(uuid.uuid4()),
+            "title": "Add project",
+            "resume_id": resume_id,
+            "operations": [operation],
+            "changes": [
+                _make_change(
+                    "Projects",
+                    "add_project",
+                    f"Add project {after_text}",
+                    after=after_text,
+                    operation=operation,
+                )
+            ],
+        }
+
+    if command_name == "switch_template":
+        template_name = payload.get("template_name") or "modern"
+        operation = {"type": "switch_template", "payload": {"template_name": template_name}}
+        return {
+            "proposal_id": str(uuid.uuid4()),
+            "title": "Switch template",
+            "resume_id": resume_id,
+            "operations": [operation],
+            "changes": [
+                _make_change(
+                    "Template",
+                    "switch_template",
+                    f"Switch to {template_name} template",
+                    after=template_name,
+                    operation=operation,
+                )
+            ],
+        }
+
+    return None
 
 
 # ─────────────────────────────────────────────────────
@@ -502,6 +724,22 @@ def handle_agent_message(user_id, message, resume_id=None, conversation_history=
     active_resume_id = resume_id or _latest_resume_id(user_id)
     actions_taken = []
 
+    preview_mode = bool(context.get("preview_mode"))
+    confirm_action = bool(context.get("confirm_action"))
+
+    if confirm_action and context.get("pending_changes"):
+        try:
+            applied = _apply_pending_changes(user_id, active_resume_id, context.get("pending_changes") or {}, actions_taken)
+            db.session.commit()
+            return applied
+        except Exception as exc:
+            db.session.rollback()
+            return {
+                "message": f"I could not apply the proposed changes: {str(exc)}",
+                "actions_taken": actions_taken,
+                "data": {"error": str(exc)},
+            }
+
     try:
         # Check for LinkedIn URL first
         linkedin_url = _extract_linkedin_username(message)
@@ -512,14 +750,14 @@ def handle_agent_message(user_id, message, resume_id=None, conversation_history=
         if _looks_like_linkedin_text(message):
             return _handle_linkedin_text(user_id, message, actions_taken)
 
-        quick = _handle_quick_command(user_id, message, active_resume_id, actions_taken)
+        quick = _handle_quick_command(user_id, message, active_resume_id, actions_taken, preview_mode=preview_mode)
         if quick:
             db.session.commit()
             return quick
 
-        resume_context = get_resume_data(active_resume_id, user_id) if active_resume_id else None
+        resume_context = context.get("resume_data") or (get_resume_data(active_resume_id, user_id) if active_resume_id else None)
         intent = _classify_intent(message, resume_context, conversation_history, context)
-        response = _execute_intent(user_id, active_resume_id, message, intent, actions_taken, resume_context)
+        response = _execute_intent(user_id, active_resume_id, message, intent, actions_taken, resume_context, preview_mode=preview_mode)
         db.session.commit()
         return response
     except Exception as exc:
@@ -644,7 +882,7 @@ def _looks_like_linkedin_text(text):
 # QUICK COMMANDS (regex-based, no AI needed)
 # ─────────────────────────────────────────────────────
 
-def _handle_quick_command(user_id, message, resume_id, actions_taken):
+def _handle_quick_command(user_id, message, resume_id, actions_taken, preview_mode=False):
     lower = message.lower()
 
     # Add skill: Name (Level)
@@ -656,6 +894,13 @@ def _handle_quick_command(user_id, message, resume_id, actions_taken):
         level_match = re.match(r"(.+?)\s*\((.+?)\)\s*$", skill_text)
         name = level_match.group(1).strip() if level_match else skill_text
         level = level_match.group(2).strip() if level_match else "Intermediate"
+        if preview_mode:
+            proposal = _proposal_from_quick_command("add_skill", {"skill_name": name, "level": level}, resume_id)
+            return _proposal_response(
+                f"I prepared a preview for adding **{name}** ({level}). Review it and confirm to apply.",
+                proposal,
+                {"resume_id": resume_id},
+            )
         skill = add_skill(resume_id, user_id, name, level)
         actions_taken.append(f"Added skill: {skill['skill_name']} ({skill['level']})")
         return {
@@ -673,6 +918,13 @@ def _handle_quick_command(user_id, message, resume_id, actions_taken):
         title, tech_stack = _split_project_text(project_text)
         link_match = re.search(r'(https?://\S+)', project_text)
         link = link_match.group(1) if link_match else ""
+        if preview_mode:
+            proposal = _proposal_from_quick_command("add_project", {"title": title, "tech_stack": tech_stack, "link": link}, resume_id)
+            return _proposal_response(
+                f"I prepared a preview for adding project **{title}**. Review it and confirm to apply.",
+                proposal,
+                {"resume_id": resume_id},
+            )
         project = add_project(resume_id, user_id, title, "", tech_stack, link)
         actions_taken.append(f"Added project: {project['project_title']}")
         msg = f"✅ Added project **{project['project_title']}**"
@@ -701,6 +953,13 @@ def _handle_quick_command(user_id, message, resume_id, actions_taken):
         if not resume_id:
             raise ValueError("Open a resume first.")
         template = "modern" if "modern" in lower else "creative" if "creative" in lower else "simple"
+        if preview_mode:
+            proposal = _proposal_from_quick_command("switch_template", {"template_name": template}, resume_id)
+            return _proposal_response(
+                f"I prepared a preview for switching to the **{template}** template. Review it and confirm to apply.",
+                proposal,
+                {"resume_id": resume_id},
+            )
         resume = _verify_resume(resume_id, user_id)
         resume.template_name = template
         actions_taken.append(f"Switched template to {template}")
@@ -770,8 +1029,17 @@ User message: {message}"""
 # INTENT EXECUTION
 # ─────────────────────────────────────────────────────
 
-def _execute_intent(user_id, resume_id, message, intent, actions_taken, resume_context):
+def _execute_intent(user_id, resume_id, message, intent, actions_taken, resume_context, preview_mode=False):
     name = (intent.get("intent") or "general_chat").strip()
+
+    if preview_mode and _intent_requires_confirmation(name):
+        preview = _build_pending_changes(name, intent, resume_id, resume_context)
+        if preview:
+            return _proposal_response(
+                preview.get("message") or "I prepared the changes below. Review them and confirm to apply.",
+                preview,
+                {"resume_id": resume_id},
+            )
 
     if name in {"create_resume"}:
         resume_data = intent.get("resume_data") or {}
@@ -951,6 +1219,146 @@ def _execute_intent(user_id, resume_id, message, intent, actions_taken, resume_c
         "actions_taken": actions_taken,
         "data": {"resume_id": resume_id},
     }
+
+
+def _intent_requires_confirmation(name):
+    return name in {
+        "create_resume",
+        "add_skill",
+        "add_project",
+        "add_experience",
+        "add_education",
+        "add_certification",
+        "update_summary",
+        "switch_template",
+    }
+
+
+def _build_pending_changes(intent_name, intent, resume_id, resume_context):
+    resume = (resume_context or {}).get("resume", {}) if resume_context else {}
+    changes = intent.get("changes") or []
+    operations = []
+    summary = ""
+    message = intent.get("reply") or "I prepared the changes below. Review them and confirm to apply."
+    title = "Review proposed changes"
+
+    if intent_name == "create_resume":
+        resume_data = intent.get("resume_data") or {}
+        if not resume_data:
+            return None
+        title = resume_data.get("title") or _title_from_message(intent.get("answer") or "Create resume")
+        summary = f"Create a new resume titled {title}."
+        changes = changes or [_make_change("Resume", "create_resume", f"Create resume {title}", before="No resume yet", after=title, operation={"type": "create_resume", "payload": resume_data})]
+        operations.append({"type": "create_resume", "payload": resume_data})
+    elif intent_name == "add_skill":
+        skill_data = intent.get("skill") or {}
+        skill_name = (skill_data.get("name") or "").strip()
+        skill_level = (skill_data.get("level") or "Intermediate").strip()
+        if not skill_name:
+            return None
+        summary = f"Add {skill_name} to your skills."
+        changes = changes or [_make_change("Skills", "add_skill", f"Add {skill_name} ({skill_level})", before="Not present", after=f"{skill_name} ({skill_level})", operation={"type": "add_skill", "payload": {"skill_name": skill_name, "level": skill_level}})]
+        operations.append({"type": "add_skill", "payload": {"skill_name": skill_name, "level": skill_level}})
+    elif intent_name == "add_project":
+        project_data = intent.get("project") or {}
+        title = (project_data.get("title") or "").strip()
+        tech_stack = (project_data.get("tech_stack") or "").strip()
+        if not title:
+            return None
+        generated_description = (project_data.get("description") or "").strip() or _safe_generate_project_description(title, tech_stack)
+        summary = f"Add project {title}."
+        changes = changes or [_make_change("Projects", "add_project", f"Add project {title}", before="Not present", after=generated_description or title, operation={"type": "add_project", "payload": {"title": title, "description": generated_description, "tech_stack": tech_stack, "link": (project_data.get("link") or "").strip()}})]
+        operations.append({"type": "add_project", "payload": {"title": title, "description": generated_description, "tech_stack": tech_stack, "link": (project_data.get("link") or "").strip()}})
+    elif intent_name == "add_experience":
+        exp_data = intent.get("experience") or {}
+        company = (exp_data.get("company") or "").strip()
+        role = (exp_data.get("role") or "").strip()
+        if not company or not role:
+            return None
+        description = (exp_data.get("description") or "").strip() or _safe_generate_experience_description(company, role, exp_data.get("start_date", ""), exp_data.get("end_date", "Present"))
+        summary = f"Add experience at {company} as {role}."
+        changes = changes or [_make_change("Experience", "add_experience", f"Add {role} at {company}", before="Not present", after=description or role, operation={"type": "add_experience", "payload": {"company": company, "role": role, "start_date": exp_data.get("start_date", ""), "end_date": exp_data.get("end_date", "Present"), "description": description}})]
+        operations.append({"type": "add_experience", "payload": {"company": company, "role": role, "start_date": exp_data.get("start_date", ""), "end_date": exp_data.get("end_date", "Present"), "description": description}})
+    elif intent_name == "add_education":
+        edu_data = intent.get("education") or {}
+        degree = (edu_data.get("degree") or "").strip()
+        institution = (edu_data.get("institution") or "").strip()
+        if not degree or not institution:
+            return None
+        summary = f"Add education {degree} from {institution}."
+        changes = changes or [_make_change("Education", "add_education", f"Add {degree} at {institution}", before="Not present", after=f"{degree} at {institution}", operation={"type": "add_education", "payload": {"degree": degree, "institution": institution, "start_year": edu_data.get("start_year"), "end_year": edu_data.get("end_year"), "score": edu_data.get("score")}})]
+        operations.append({"type": "add_education", "payload": {"degree": degree, "institution": institution, "start_year": edu_data.get("start_year"), "end_year": edu_data.get("end_year"), "score": edu_data.get("score")}})
+    elif intent_name == "add_certification":
+        cert_data = intent.get("certification") or {}
+        title = (cert_data.get("title") or "").strip()
+        if not title:
+            return None
+        summary = f"Add certification {title}."
+        changes = changes or [_make_change("Certifications", "add_certification", f"Add certification {title}", before="Not present", after=f"{title} from {(cert_data.get('organization') or '').strip() or 'an issuer'}", operation={"type": "add_certification", "payload": {"title": title, "organization": cert_data.get("organization", ""), "issue_year": cert_data.get("issue_year", "")}})]
+        operations.append({"type": "add_certification", "payload": {"title": title, "organization": cert_data.get("organization", ""), "issue_year": cert_data.get("issue_year", "")}})
+    elif intent_name == "update_summary":
+        generated_summary = _safe_generate_summary(resume)
+        if not generated_summary:
+            return None
+        summary = "Update the resume summary."
+        changes = changes or [_make_change("Summary", "update_summary", "Update summary", before=resume.get("summary") or "No summary yet", after=generated_summary, operation={"type": "update_summary", "payload": {"summary": generated_summary}})]
+        operations.append({"type": "update_summary", "payload": {"summary": generated_summary}})
+    elif intent_name == "switch_template":
+        template = (intent.get("template_name") or "modern").lower()
+        summary = f"Switch the resume template to {template}."
+        changes = changes or [_make_change("Template", "switch_template", f"Switch to {template} template", before=resume.get("template_name") or "current template", after=template, operation={"type": "switch_template", "payload": {"template_name": template}})]
+        operations.append({"type": "switch_template", "payload": {"template_name": template}})
+
+    if not operations:
+        return None
+
+    return {
+        "proposal_id": str(uuid.uuid4()),
+        "title": title,
+        "summary": summary,
+        "message": message,
+        "requires_confirmation": True,
+        "changes": changes,
+        "operations": operations,
+        "resume_id": resume_id,
+    }
+
+
+def _apply_pending_changes(user_id, resume_id, pending_changes, actions_taken):
+    operations = pending_changes.get("operations") or []
+    if not operations:
+        raise ValueError("No changes were provided to apply.")
+
+    result = _apply_operations(user_id, resume_id, operations)
+    result["message"] = pending_changes.get("success_message") or "✅ Applied the reviewed changes."
+    result["data"] = {
+        **(result.get("data") or {}),
+        "pending_changes": None,
+        "resume_id": result.get("resume_id") or resume_id,
+    }
+    actions_taken.extend(result.get("actions_taken") or [])
+    return result
+
+
+def _safe_generate_project_description(title, tech_stack):
+    try:
+        return generate_project_description({"title": title, "tech_stack": tech_stack})
+    except Exception:
+        return ""
+
+
+def _safe_generate_experience_description(company, role, start_date, end_date):
+    try:
+        return generate_experience_description({"company": company, "role": role, "start_date": start_date, "end_date": end_date})
+    except Exception:
+        return ""
+
+
+def _safe_generate_summary(resume):
+    try:
+        return generate_summary({"full_name": resume.get("full_name") or "", "professional_title": resume.get("professional_title") or resume.get("title") or ""})
+    except Exception:
+        return ""
 
 
 # ─────────────────────────────────────────────────────

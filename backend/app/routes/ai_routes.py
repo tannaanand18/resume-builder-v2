@@ -19,6 +19,7 @@ def ai_agent():
         resume_id = data.get("resume_id")
         conversation_history = data.get("conversation_history", [])
         context = data.get("context", {})
+        context = {**context, "confirm_action": bool(data.get("confirm_action")), "pending_changes": data.get("pending_changes") or context.get("pending_changes")}
 
         result = handle_agent_message(
             user_id=user_id,

@@ -89,6 +89,7 @@ export default function AIAgent() {
   const [thinking, setThinking] = useState(false);
   const [resumeContext, setResumeContext] = useState(null);
   const [activeResumeId, setActiveResumeId] = useState(null);
+  const [pendingProposal, setPendingProposal] = useState(null);
   const [error, setError] = useState("");
   const messagesEndRef = useRef(null);
 
@@ -122,6 +123,7 @@ export default function AIAgent() {
     } else {
       setMessages([WELCOME_MESSAGE]);
     }
+    setPendingProposal(null);
 
     const loadContext = async () => {
       try {
@@ -234,6 +236,100 @@ export default function AIAgent() {
     );
   };
 
+  const confirmPendingProposal = async () => {
+    if (!pendingProposal || thinking) return;
+
+    setThinking(true);
+    setError("");
+
+    try {
+      const response = await api.post("/ai/agent", {
+        message: pendingProposal.sourceMessage || pendingProposal.message || "Apply reviewed changes",
+        resume_id: pendingProposal.resume_id || activeResumeId,
+        confirm_action: true,
+        pending_changes: pendingProposal.proposal || pendingProposal,
+        conversation_history: messages.slice(-12),
+        context: {
+          current_page: getCurrentPage(pathname),
+          resume_data: resumeContext,
+          preview_mode: true,
+          confirm_action: true,
+          pending_changes: pendingProposal.proposal || pendingProposal,
+        },
+      });
+
+      const result = response.data || {};
+      const nextResumeId = result.data?.resume_id || result.data?.resume?.resume?.id || result.data?.resume?.id;
+      if (nextResumeId) setActiveResumeId(nextResumeId);
+      if (result.data?.resume) setResumeContext(result.data.resume);
+
+      setMessages((current) => [
+        ...current,
+        {
+          role: "agent",
+          content: result.message || "✅ Applied the reviewed changes.",
+          actions_taken: result.actions_taken || [],
+          data: result.data || {},
+        },
+      ]);
+      setPendingProposal(null);
+    } catch (err) {
+      const message =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        "I could not apply the reviewed changes.";
+      setError(message);
+      setMessages((current) => [...current, { role: "agent", content: message }]);
+    } finally {
+      setThinking(false);
+    }
+  };
+
+  const cancelPendingProposal = () => {
+    setPendingProposal(null);
+    setError("");
+  };
+
+  const renderProposalPanel = () => {
+    if (!pendingProposal?.changes?.length) return null;
+
+    return (
+      <div style={styles.proposalCard}>
+        <div style={styles.proposalHeader}>
+          <div>
+            <div style={styles.proposalTitle}>Review changes</div>
+            <div style={styles.proposalSubtitle}>{pendingProposal.summary || pendingProposal.message}</div>
+          </div>
+          <span style={styles.previewBadge}>Preview</span>
+        </div>
+
+        <div style={styles.proposalList}>
+          {pendingProposal.changes.map((change) => (
+            <div key={change.id || change.summary} style={styles.proposalItem}>
+              <div style={styles.proposalItemHeader}>
+                <strong>{change.title || change.summary}</strong>
+                <span style={styles.proposalSection}>{change.section || change.action}</span>
+              </div>
+              {change.before ? <div style={styles.diffBefore}><span>Before</span>{change.before}</div> : null}
+              {change.after ? <div style={styles.diffAfter}><span>After</span>{change.after}</div> : null}
+              {change.details ? <div style={styles.proposalDetails}>{change.details}</div> : null}
+            </div>
+          ))}
+        </div>
+
+        <div style={styles.proposalActions}>
+          <button type="button" style={styles.cancelButton} onClick={cancelPendingProposal} disabled={thinking}>
+            Cancel
+          </button>
+          <button type="button" style={styles.confirmButton} onClick={confirmPendingProposal} disabled={thinking}>
+            {thinking ? <Loader2 size={16} style={styles.spin} /> : null}
+            Confirm and apply
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const sendMessage = async (event) => {
     event?.preventDefault();
 
@@ -255,6 +351,7 @@ export default function AIAgent() {
         context: {
           current_page: getCurrentPage(pathname),
           resume_data: resumeContext,
+          preview_mode: true,
         },
       });
 
@@ -262,6 +359,16 @@ export default function AIAgent() {
       const nextResumeId = result.data?.resume_id || result.data?.resume?.resume?.id || result.data?.resume?.id;
       if (nextResumeId) setActiveResumeId(nextResumeId);
       if (result.data?.resume) setResumeContext(result.data.resume);
+      if (result.data?.pending_changes?.length) {
+        setPendingProposal({
+          ...result.data.proposal,
+          ...result.data,
+          sourceMessage: text,
+          resume_id: nextResumeId || pathResumeId || activeResumeId,
+        });
+      } else {
+        setPendingProposal(null);
+      }
 
       setMessages((current) => [
         ...current,
@@ -340,6 +447,8 @@ export default function AIAgent() {
 
           <div ref={messagesEndRef} />
         </div>
+
+        {renderProposalPanel()}
 
         {error ? <div style={styles.error}>{error}</div> : null}
 
@@ -559,6 +668,113 @@ const styles = {
     background: "rgba(79, 70, 229, 0.1)",
     color: "#4338ca",
     fontWeight: 700,
+  },
+  proposalCard: {
+    borderTop: "1px solid #e5e7eb",
+    background: "#fff7ed",
+    padding: 12,
+  },
+  proposalHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 10,
+  },
+  proposalTitle: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#7c2d12",
+  },
+  proposalSubtitle: {
+    fontSize: 12,
+    color: "#9a3412",
+    marginTop: 3,
+    lineHeight: 1.4,
+  },
+  previewBadge: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: "#b45309",
+    background: "#ffedd5",
+    borderRadius: 999,
+    padding: "4px 8px",
+    flex: "0 0 auto",
+  },
+  proposalList: {
+    display: "grid",
+    gap: 8,
+  },
+  proposalItem: {
+    background: "#fff",
+    border: "1px solid #fed7aa",
+    borderRadius: 12,
+    padding: 10,
+  },
+  proposalItemHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 8,
+    fontSize: 12,
+    color: "#431407",
+  },
+  proposalSection: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#b45309",
+    background: "#ffedd5",
+    borderRadius: 999,
+    padding: "3px 8px",
+  },
+  diffBefore: {
+    fontSize: 12,
+    color: "#6b7280",
+    display: "flex",
+    gap: 8,
+    marginBottom: 6,
+  },
+  diffAfter: {
+    fontSize: 12,
+    color: "#111827",
+    display: "flex",
+    gap: 8,
+    fontWeight: 600,
+  },
+  proposalDetails: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#7c2d12",
+  },
+  proposalActions: {
+    display: "flex",
+    gap: 10,
+    marginTop: 12,
+  },
+  cancelButton: {
+    flex: 1,
+    height: 40,
+    borderRadius: 999,
+    border: "1px solid #fdba74",
+    background: "#fff",
+    color: "#9a3412",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  confirmButton: {
+    flex: 1,
+    height: 40,
+    borderRadius: 999,
+    border: "none",
+    background: "linear-gradient(135deg, #fb923c, #f97316)",
+    color: "#fff",
+    fontWeight: 800,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
   spin: {
     animation: "resumeai-spin 0.8s linear infinite",
